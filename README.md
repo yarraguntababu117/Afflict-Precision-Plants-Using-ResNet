@@ -1,6 +1,7 @@
 Table of contents
 
 1. Exploratory Data Analysis(EDA):
+   Collect the Dataset from kaggle: 
    a. Train Subset
    b. Valid Subset
    c. Test Subset
