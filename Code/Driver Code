@@ -1,0 +1,349 @@
+import os
+import shutil
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from PIL import Image
+import torch
+from torchvision.utils import make_grid
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.models import Sequential, Model, load_model
+from tensorflow.keras.layers import (Dense, Dropout, GlobalAveragePooling2D, Conv2D, MaxPool2D, AveragePooling2D, Flatten, ZeroPadding2D, BatchNormalization, Activation, Add, Input)
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.applications.resnet50 import preprocess_input
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score   
+
+
+train_path="../input/new-plant-diseases-dataset/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train/"
+valid_path="../input/new-plant-diseases-dataset/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/valid/"
+test_path="../input/new-plant-diseases-dataset/test/"
+
+
+1. Exploratory Data Analysis (EDA):
+
+def count_images(path, label):
+    counts = {disease: len(os.listdir(os.path.join(path, disease))) for disease in os.listdir(path)}
+    total = sum(counts.values())
+    print(f"Total images for {label}: {total}")
+
+count_images(train_path, "training")
+count_images(valid_path, "validation")
+count_images(test_path, "testing")
+
+class_names = os.listdir(train_path)
+print(class_names, "\n\nTotal number of classes are: ", len(class_names))
+
+plants = []
+diseases = []
+NumberOfDiseases = 0
+for plant in class_names:
+    if plant.split('___')[0] not in plants:
+        plants.append(plant.split('___')[0])
+    if plant.split('___')[1] != 'healthy':
+        NumberOfDiseases += 1
+        diseases.append(plant.split('___')[1])
+
+# unique plants and diseases in the dataset
+print(f"Unique Plants are: \n{plants}")
+print(f"\nUnique Diseases are: \n{diseases}")
+print("\nNumber of plants: {}".format(len(plants)))
+print("Number of diseases: {}".format(NumberOfDiseases))
+
+a. Train Subset
+
+nums = {}
+for disease in class_names:
+    nums[disease] = len(os.listdir(train_path + '/' + disease))
+
+img_per_class = pd.DataFrame(nums.values(), index=nums.keys(), columns=["no. of images"])
+img_per_class
+
+plant_names = []
+Len = []
+for i in class_names:
+    plant_names.append(i)
+    imgs_path = os.listdir(train_path + "/" + i)
+    Len.append(len(imgs_path))
+
+Len = np.array(sorted(Len, reverse=True))
+plant_names = np.array(plant_names)
+
+sns.set(style="whitegrid", color_codes=True)
+plt.figure(figsize=(20,20),dpi=200)
+ax = sns.barplot(x= Len, y= plant_names, palette="Greens")
+plt.xticks(fontsize=20)
+plt.yticks(fontsize=20)
+plt.title('Images per each class of plant disease', fontsize = 25, pad = 25)
+plt.show()
+
+b. Valid Subset
+nums = {}
+for disease in class_names:
+    nums[disease] = len(os.listdir(valid_path + '/' + disease))
+
+img_per_class = pd.DataFrame(nums.values(), index=nums.keys(), columns=["no. of images"])
+img_per_class
+
+plant_names = []
+Len = []
+for i in class_names:
+    plant_names.append(i)
+    imgs_path = os.listdir(valid_path + "/" + i)
+    Len.append(len(imgs_path))
+
+Len = np.array(sorted(Len, reverse=True))
+plant_names = np.array(plant_names)
+
+sns.set(style="whitegrid", color_codes=True)
+plt.figure(figsize=(20,20),dpi=200)
+ax = sns.barplot(x= Len, y= plant_names, palette="Greens")
+plt.xticks(fontsize=20)
+plt.yticks(fontsize=20)
+plt.title('Images per each class of plant disease', fontsize = 25, pad = 25)
+plt.show()
+
+c. Test Subset
+
+# show all images in the test folder
+test_dir = '/kaggle/input/new-plant-diseases-dataset/test/test'
+test_images = os.listdir(test_dir)
+
+plt.figure(figsize=(60, 60), dpi=200)
+
+for idx, img_name in enumerate(test_images):
+    plt.subplot(6, 6, idx + 1)
+    img_path = os.path.join(test_dir, img_name)
+    img_show = plt.imread(img_path)
+    plt.imshow(img_show)
+    
+    # Display the image name as the label
+    plt.xlabel(img_name, fontsize=33, labelpad = 20)
+    plt.xticks([])
+    plt.yticks([])
+
+plt.tight_layout()
+plt.show()
+
+2. Data Preprocessing
+-> Splitting the Data:
+.Since the original test set has only 33 images, we are going to use the vaild data for testing.
+.The original training data will be split into two parts: 80% for actual training and 20% for validation.
+
+traindata_generator = tf.keras.preprocessing.image.ImageDataGenerator(
+    rescale=1./255,
+    validation_split=0.2  # Using 20% of the training set as validation
+)
+
+batch_size = 32
+
+train_data_generator = traindata_generator.flow_from_directory(
+    train_path,
+    target_size=(224, 224),
+    color_mode="rgb",
+    batch_size=batch_size,
+    class_mode="categorical",
+    shuffle=True,
+    subset='training'
+)
+
+valid_data_generator = traindata_generator.flow_from_directory(
+    train_path,
+    target_size=(224, 224),
+    color_mode="rgb",
+    batch_size=batch_size,
+    class_mode="categorical",
+    shuffle=True,
+    subset='validation'
+)
+
+testdata_generator = tf.keras.preprocessing.image.ImageDataGenerator(rescale=1./255)
+test_data_generator = testdata_generator.flow_from_directory(
+    valid_path,
+    target_size=(224, 224),
+    color_mode="rgb",
+    batch_size=batch_size,
+    class_mode="categorical",
+    shuffle=False
+)
+
+class_dict = train_data_generator.class_indices
+print("Class indices:", class_dict)
+
+# Getting sample counts for each set
+train_number = train_data_generator.samples
+valid_number = valid_data_generator.samples
+test_number = test_data_generator.samples
+print(f"Number of training samples: {train_number}")
+print(f"Number of validation samples: {valid_number}")
+print(f"Number of test samples: {test_number}")
+
+# helper function to show a batch of training instances
+def show_batch(data_generator):
+    images, labels = next(data_generator)
+    images_tensor = torch.tensor(images).permute(0, 3, 1, 2)
+
+    fig, ax = plt.subplots(figsize=(30, 30))
+    ax.set_xticks([]) 
+    ax.set_yticks([])
+
+    ax.imshow(make_grid(images_tensor, nrow=8).permute(1, 2, 0).numpy())
+    plt.show()
+
+# Images for first batch of training
+show_batch(train_data_generator)
+
+3. Data Modeling
+
+# Load ResNet50 base model with pre-trained weights from ImageNet
+resnet50_model = ResNet50(include_top=False, weights=None, input_shape=(224,224,3), classes=38)
+
+resnet50_model.trainable = False  # Freeze the base model layers 
+
+# Adding custom layers on top of the ResNet base model
+x = resnet50_model.output
+x = GlobalAveragePooling2D()(x)  # Pooling to reduce dimensions
+x = Dense(1024, activation='relu')(x)  # Dense layer for learning complex patterns
+x = Dropout(0.5)(x)  # Dropout for regularization
+x = Dense(512, activation='relu')(x)
+x = Dropout(0.3)(x)
+predictions = Dense(38, activation='softmax')(x)  # Output layer
+
+# Define the complete model
+model = Model(inputs=resnet50_model.input, outputs=predictions)
+
+# Compile the model
+model.compile(optimizer=Adam(learning_rate=0.0001), loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Display the model summary
+model.summary()
+
+# Set up callbacks
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
+    ModelCheckpoint('best_resnet_model.keras', save_best_only=True, monitor='val_loss'),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-6)
+]
+
+# Train the model
+history = model.fit(
+    train_data_generator,
+    steps_per_epoch=train_data_generator.samples // batch_size,
+    validation_data=valid_data_generator,
+    validation_steps=valid_data_generator.samples // batch_size,
+    epochs=25,
+    callbacks=callbacks
+)
+
+# Unfreeze the base model layers
+resnet50_model.trainable = True
+
+# Recompile with a lower learning rate for fine-tuning
+
+model.compile(
+    optimizer=Adam(learning_rate=1e-5),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+# Fine-tune the model
+
+fine_tune_history = model.fit(
+    train_data_generator,
+    steps_per_epoch=train_data_generator.samples // batch_size,
+    validation_data=valid_data_generator,
+    validation_steps=valid_data_generator.samples // batch_size,
+    epochs=10,
+    callbacks=callbacks
+)
+
+4. Model Evaluation
+
+# Summarize history for accuracy
+def plot_accuracy(history):
+    # Plot training & validation accuracy values
+    plt.plot(history.history['accuracy'], label='Training Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    plt.title('Model Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend(loc='upper left')
+    plt.grid(True)
+    plt.show()
+
+# Plot accuracy using the history object
+plot_accuracy(fine_tune_history)
+
+# Summarize history for loss
+def plot_loss(history):
+    # Plot training & validation loss values
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Model Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend(loc='upper right')
+    plt.grid(True)
+    plt.show()
+
+# Plot loss using the history object
+plot_loss(fine_tune_history)
+
+# Generate predictions on the test data
+predictions = model.predict(test_data_generator)
+predicted_classes = np.argmax(predictions, axis=1)
+true_classes = test_data_generator.classes
+class_labels = list(test_data_generator.class_indices.keys())
+
+print("Length of true_classes:", len(true_classes))
+print("Length of predicted_classes:", len(predicted_classes))
+
+print("Accuracy Score is",accuracy_score(true_classes, predicted_classes))
+
+class_name = list(test_data_generator.class_indices.keys())
+
+plt.figure(figsize=(30,30))
+number_images=(5,5)
+for i in range(1,(number_images[0]*number_images[1])+1):
+    plt.subplot(number_images[0],number_images[1],i)
+    plt.axis("off")
+    
+    true_label = class_name[test_data_generator.classes[i]]
+    predicted_label = class_name[final_predict[i]]
+    
+    color="green"
+    if true_label != predicted_label:
+        color="red"
+    
+    plt.title(f"True: {true_label}\nPredicted: {predicted_label}", color=color)
+    plt.imshow(plt.imread(test_data_generator.filepaths[i]))
+plt.show()
+
+test_loss, test_accuracy = model.evaluate(test_data_generator)
+print(f"Test Loss: {test_loss}")
+print(f"Test Accuracy: {test_accuracy}")
+
+# Print the classification report
+report = classification_report(true_classes, predicted_classes, target_names=class_labels)
+print("Classification Report:\n", report)
+
+# Compute confusion matrix
+conf_matrix = confusion_matrix(true_classes, predicted_classes)
+
+# Plot confusion matrix
+plt.figure(figsize=(30, 30))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Oranges', 
+            xticklabels=class_labels, yticklabels=class_labels)
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.title('Confusion Matrix')
+plt.show()
+
+5. Saving the Model
+
+os.makedirs("/kaggle/working/model", exist_ok=True)
+model.save('/kaggle/working/model/ResNet50.h5')
